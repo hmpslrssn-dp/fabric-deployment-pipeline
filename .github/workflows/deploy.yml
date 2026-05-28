@@ -1,0 +1,100 @@
+name: Deploy to Fabric Workspace
+
+# ─── When does this pipeline run? ────────────────────────────────────────────
+# "on: push" means the pipeline triggers automatically whenever code is pushed
+# to one of the listed branches. We only list the three branches that correspond
+# to real Fabric workspaces — pushes to any other branch (e.g. a feature branch)
+# are ignored and won't trigger a deployment.
+on:
+  push:
+    branches:
+      - dev
+      - test
+      - prod
+
+# ─── Jobs ─────────────────────────────────────────────────────────────────────
+# A "job" is a collection of steps that run together on the same machine.
+# We only need one job here because all three environments follow the same
+# deployment process — only the target workspace changes.
+jobs:
+  deploy:
+    # The job name shown in the GitHub Actions UI.
+    # github.ref_name resolves to the branch name at runtime (dev / test / prod),
+    # so the UI will show e.g. "Deploy to prod" making it easy to see at a glance
+    # which environment a run targeted.
+    name: Deploy to ${{ github.ref_name }}
+
+    # The type of virtual machine GitHub spins up to run this job.
+    # ubuntu-latest is the standard choice — it's fast, free for public repos,
+    # and the fabric-cicd Python package runs fine on Linux.
+    runs-on: ubuntu-latest
+
+    # ── GitHub Environment ────────────────────────────────────────────────────
+    # This is the key line that ties the branch to the right Fabric workspace.
+    # GitHub "Environments" are configured in your repo under Settings → Environments.
+    # By using the branch name as the environment name, GitHub automatically
+    # loads the secrets and variables you've defined for that environment
+    # (e.g. the FABRIC_WORKSPACE_ID for prod is different from the one for dev).
+    # It also enforces any protection rules you've set — for example, requiring
+    # a manual approval before the prod environment is allowed to proceed.
+    environment: ${{ github.ref_name }}
+
+    steps:
+      # ── Step 1: Get the code ─────────────────────────────────────────────
+      # Before we can do anything, we need to download the contents of the
+      # repository onto the virtual machine. "actions/checkout" is an official
+      # GitHub Action that does exactly that. @v4 pins us to a specific version
+      # so a future update to the action doesn't unexpectedly break our pipeline.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Step 2: Install Python ───────────────────────────────────────────
+      # The virtual machine comes with Python pre-installed, but pinning to a
+      # specific version (3.11) ensures the pipeline behaves the same way every
+      # time, regardless of what GitHub installs on their runners in the future.
+      # "cache: pip" stores downloaded packages between runs so subsequent
+      # deployments are faster — pip won't re-download packages that haven't changed.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ── Step 3: Install Python dependencies ──────────────────────────────
+      # requirements.txt lists the Python packages our deploy script needs.
+      # Installing from a file (rather than running "pip install fabric-cicd"
+      # directly) is best practice because it lets us pin exact package versions
+      # later, making deployments reproducible and easier to audit.
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── Step 4: Run the deployment script ────────────────────────────────
+      # This is the step that actually deploys your reports and semantic models.
+      # We pass credentials and the target workspace ID as environment variables
+      # rather than hardcoding them in the script. This is important for two reasons:
+      #   1. Security — secrets never appear in source code or logs.
+      #   2. Flexibility — the same script works for dev, test, and prod because
+      #      the values change per environment without touching the code.
+      #
+      # secrets.*  — sensitive values (passwords, client secrets). GitHub masks
+      #              these in logs so they never appear in plain text.
+      # vars.*     — non-sensitive values (workspace IDs). Visible in the UI
+      #              but still kept out of the code so they're easy to update.
+      #
+      # All three credential secrets (CLIENT_ID, CLIENT_SECRET, TENANT_ID) are
+      # set once at the repository level and shared across all environments,
+      # because the same service principal is used to authenticate to Fabric
+      # regardless of which workspace we're deploying to.
+      # FABRIC_WORKSPACE_ID is set per-environment because it's different for
+      # dev, test, and prod.
+      - name: Deploy reports and semantic models
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          FABRIC_WORKSPACE_ID: ${{ vars.FABRIC_WORKSPACE_ID }}
+          # ENVIRONMENT_NAME is the branch name at runtime (dev / test / prod).
+          # The deploy script passes this to fabric-cicd so it knows which
+          # replacement values to pick from the parameter.yml file.
+          ENVIRONMENT_NAME: ${{ github.ref_name }}
+        run: python scripts/deploy.py

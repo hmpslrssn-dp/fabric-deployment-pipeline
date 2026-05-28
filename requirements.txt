@@ -1,0 +1,10 @@
+# Python packages required by scripts/deploy.py.
+# These are installed by the GitHub Actions workflow before the deploy script runs.
+
+# Microsoft's open-source library for deploying Power BI / Fabric items
+# via the Fabric REST API.
+fabric-cicd
+
+# Azure authentication library. Provides ClientSecretCredential, which the
+# deploy script uses to authenticate as a service principal.
+azure-identity

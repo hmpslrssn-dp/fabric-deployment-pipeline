@@ -1,0 +1,128 @@
+# =============================================================================
+# parameter.yml — Semantic Model parameterisation file
+#
+# This file tells fabric-cicd which values inside your Semantic Model
+# definitions should be swapped out depending on which environment you're
+# deploying to. For example, you might have a dev SQL server and a prod SQL
+# server — this file maps one to the other at deploy time so the same model
+# source files work across all three environments.
+#
+# HOW IT WORKS
+# ------------
+# When the deploy script runs, fabric-cicd reads your Semantic Model definition
+# files (e.g. TMDL or .bim JSON files) and applies the substitutions defined
+# below before publishing to the target workspace.
+#
+# WHICH SUBSTITUTION TYPE SHOULD I USE?
+# --------------------------------------
+# There are two types available. Use key_value_replace by default:
+#
+#   key_value_replace  ← RECOMMENDED. Targets a specific key inside a JSON or
+#                        YAML file using a JSONPath expression. Only that exact
+#                        key's value is changed — nothing else in the file can
+#                        be accidentally affected, even if the same string
+#                        appears elsewhere.
+#
+#   find_replace       ← Plain text find-and-replace across the entire file
+#                        content. Simpler to write but riskier — if your
+#                        find_value string appears somewhere unexpected in the
+#                        file it will be replaced there too. Only use this when
+#                        the value you're replacing doesn't appear in a
+#                        predictable JSON/YAML key (e.g. it's embedded in a
+#                        connection string inside a larger blob of text).
+#
+# HOW TO READ THE STRUCTURE
+# -------------------------
+# Both types share the same replace_value format:
+#
+#   replace_value:
+#     dev:  "..."    ← value used when deploying to the dev  workspace
+#     test: "..."    ← value used when deploying to the test workspace
+#     prod: "..."    ← value used when deploying to the prod workspace
+#
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# key_value_replace — RECOMMENDED default approach
+#
+# Uses a JSONPath expression (find_key) to locate a specific key inside your
+# model's JSON or YAML definition files, and replaces only that key's value.
+#
+# JSONPath quick reference:
+#   $               the root of the document
+#   .property       a child property named "property"
+#   [*]             all items in an array
+#   ..property      any descendant named "property" (recursive search)
+#
+# Example: "$.connectionDetails.server" targets the "server" key nested inside
+# "connectionDetails" at the top level of the file — nothing else is touched.
+#
+# OPTIONAL FILTERS (same for both types)
+#   item_name: "MyModel"         only apply to a model with this exact name
+#   file_path:  "model.bim"      only apply within this specific file
+# -----------------------------------------------------------------------------
+key_value_replace:
+
+  # Example 1: Replace the SQL server name in a specific key
+  #
+  # The JSONPath below targets the "server" property inside "connectionDetails".
+  # Adjust the path to match the actual structure of your .bim or TMDL file.
+  # To find the right path, open your model definition file and trace the
+  # nesting from the root down to the value you want to replace.
+  - find_key: "$.connectionDetails.server"
+    replace_value:
+      dev:  "dev-sql-server.database.windows.net"
+      test: "test-sql-server.database.windows.net"
+      prod: "prod-sql-server.database.windows.net"
+
+  # Example 2: Replace a database name, scoped to one model
+  #
+  # item_name limits this rule to a single named model so it won't affect
+  # any other Semantic Models that might have a "database" key at the same path.
+  - find_key: "$.connectionDetails.database"
+    replace_value:
+      dev:  "dev_sales_db"
+      test: "test_sales_db"
+      prod: "prod_sales_db"
+    item_name: "Sales Semantic Model"
+
+  # Example 3: Replace a value inside an array of data sources
+  #
+  # [*] matches every item in the "dataSources" array, so if your model has
+  # multiple data sources this will update the "connectionString" in all of them.
+  # Narrow it with item_name or file_path if you only want to target some.
+  # - find_key: "$.dataSources[*].connectionString"
+  #   replace_value:
+  #     dev:  "Data Source=dev-sql-server.database.windows.net;..."
+  #     test: "Data Source=test-sql-server.database.windows.net;..."
+  #     prod: "Data Source=prod-sql-server.database.windows.net;..."
+
+
+# -----------------------------------------------------------------------------
+# find_replace — use only when key_value_replace isn't applicable
+#
+# Plain text search-and-replace applied across the full content of each file.
+# Safe to use when the value is long and distinctive enough that it won't
+# appear anywhere else in the file — e.g. a full URL or connection string.
+# Avoid short or generic values (e.g. just "dev") as they risk matching
+# unintended places in the file.
+#
+# OPTIONAL FILTERS
+#   item_name: "MyModel"               only apply to a model with this exact name
+#   file_path:  "definition/model.bim" only apply within this specific file
+#   is_regex: true                     treat find_value as a regular expression
+# -----------------------------------------------------------------------------
+find_replace:
+
+  # Example: Replace a full storage account URL
+  #
+  # The value is long and unique enough that an accidental match elsewhere
+  # is very unlikely, making find_replace reasonable here. file_path further
+  # constrains it to a single known file for extra safety.
+  # - find_value: "https://devstorageaccount.blob.core.windows.net/container"
+  #   replace_value:
+  #     dev:  "https://devstorageaccount.blob.core.windows.net/container"
+  #     test: "https://teststorageaccount.blob.core.windows.net/container"
+  #     prod: "https://prodstorageaccount.blob.core.windows.net/container"
+  #   file_path: "definition/expressions.tmdl"
