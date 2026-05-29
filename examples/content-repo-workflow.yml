@@ -1,0 +1,119 @@
+# =============================================================================
+# content-repo-workflow.yml
+#
+# TEMPLATE — copy this file into your content repository at:
+#   .github/workflows/deploy.yml
+#
+# This is the workflow that lives in each Power BI content repository (e.g.
+# sales-reports, finance-reports). It is intentionally thin — it contains no
+# deployment logic itself. All it does is:
+#   1. Wait for an approval if deploying to a protected environment (prod)
+#   2. Call the reusable deployment workflow in the central repo
+#
+# This means if the deployment process ever needs to change, you only update
+# the central repo — all content repos pick up the change automatically.
+#
+# THINGS TO UPDATE BEFORE USING THIS TEMPLATE
+# --------------------------------------------
+# 1. Replace "your-org" with your actual GitHub organisation name throughout
+# 2. Set up GitHub Environments in this repo's Settings → Environments:
+#      - Create environments named "dev", "test", and "prod"
+#      - On the "prod" environment, add a required reviewer for the approval gate
+#      - On each environment, add a variable: FABRIC_WORKSPACE_ID = <workspace GUID>
+# 3. Store the following secrets at the organisation or repository level:
+#      - AZURE_CLIENT_ID      (service principal app ID)
+#      - AZURE_CLIENT_SECRET  (service principal secret)
+#      - AZURE_TENANT_ID      (your Azure AD tenant ID)
+#      - GH_PAT               (GitHub PAT with read access to content repos —
+#                              stored in the central deployment repo's secrets,
+#                              not here, as it's used by the central workflow)
+# =============================================================================
+
+name: Deploy to Fabric Workspace
+
+# ─── Trigger ──────────────────────────────────────────────────────────────────
+# The workflow runs automatically when code is pushed to one of the three
+# environment branches. Pushes to any other branch (e.g. a feature branch)
+# are ignored — only commits that land on dev, test, or prod trigger a deploy.
+on:
+  push:
+    branches:
+      - dev
+      - test
+      - prod
+
+jobs:
+
+  # ── Job 1: Approval gate ───────────────────────────────────────────────────
+  # This job exists purely to enforce the environment protection rules you've
+  # configured in GitHub Settings → Environments. It doesn't do any real work —
+  # just prints a confirmation message once approved.
+  #
+  # WHY A SEPARATE JOB?
+  # GitHub Actions does not allow the "environment:" keyword on a job that calls
+  # a reusable workflow (uses:). Using a separate gate job is the standard
+  # workaround — the gate enforces the approval, and only once it passes does
+  # the deploy job start.
+  #
+  # For dev and test the gate will pass immediately (no reviewer configured).
+  # For prod it will pause and wait for a manual approval from the configured
+  # reviewer before allowing the deployment to proceed.
+  gate:
+    name: Await approval for ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+
+    # environment: ties this job to the GitHub Environment matching the branch
+    # name. GitHub looks up that environment's protection rules and enforces them
+    # before this job is allowed to run.
+    environment: ${{ github.ref_name }}
+
+    steps:
+      - name: Approved
+        run: echo "Deployment to ${{ github.ref_name }} approved — proceeding."
+
+
+  # ── Job 2: Deploy ──────────────────────────────────────────────────────────
+  # This job calls the reusable deployment workflow in the central repo.
+  # It only runs after the gate job above has completed successfully (and been
+  # approved, in the case of prod).
+  deploy:
+    name: Deploy to ${{ github.ref_name }}
+    needs: gate   # wait for the approval gate to pass before starting
+
+    # "uses:" delegates this job entirely to the reusable workflow in the
+    # central repo. The path format is: org/repo/.github/workflows/file.yml@ref
+    # @main means we always use the latest version on the main branch of the
+    # central repo — so deployment improvements are picked up automatically.
+    uses: your-org/fabric-deployment-pipeline/.github/workflows/deploy.yml@main
+
+    # ── Inputs ────────────────────────────────────────────────────────────
+    # These are the values passed to the reusable workflow. They tell it which
+    # repo to deploy from, which environment to target, and where to find the
+    # artifact folders within this repo.
+    with:
+      # github.repository is a built-in variable that resolves to this repo's
+      # full name (e.g. "your-org/sales-reports") at runtime — no hardcoding needed.
+      content_repo: ${{ github.repository }}
+
+      # github.ref_name is the branch name that triggered this workflow run
+      # (dev, test, or prod). Passing it here tells the central workflow which
+      # environment to deploy to and which parameter.yml values to use.
+      environment_name: ${{ github.ref_name }}
+
+      # vars.FABRIC_WORKSPACE_ID is read from the GitHub Environment variables
+      # you configured in Settings → Environments. Each environment (dev/test/prod)
+      # has its own value, so this automatically resolves to the right workspace.
+      workspace_id: ${{ vars.FABRIC_WORKSPACE_ID }}
+
+      # These paths are relative to the root of this content repo. Only specify
+      # them if your folder structure differs from the default (artifacts/reports
+      # and artifacts/semantic-models). Otherwise you can delete these two lines.
+      reports_path: "artifacts/reports"
+      semantic_models_path: "artifacts/semantic-models"
+
+    # ── Secrets ───────────────────────────────────────────────────────────
+    # "secrets: inherit" passes all of this repo's secrets through to the
+    # reusable workflow automatically. This covers AZURE_CLIENT_ID,
+    # AZURE_CLIENT_SECRET, AZURE_TENANT_ID, and GH_PAT without needing to
+    # list them individually.
+    secrets: inherit
