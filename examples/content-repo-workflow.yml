@@ -112,8 +112,13 @@ jobs:
       semantic_models_path: "artifacts/semantic-models"
 
     # ── Secrets ───────────────────────────────────────────────────────────
-    # "secrets: inherit" passes all of this repo's secrets through to the
-    # reusable workflow automatically. This covers AZURE_CLIENT_ID,
-    # AZURE_CLIENT_SECRET, AZURE_TENANT_ID, and GH_PAT without needing to
-    # list them individually.
-    secrets: inherit
+    # Secrets are passed explicitly rather than using "secrets: inherit" so
+    # that we can pass GITHUB_TOKEN as GH_PAT. Every repo automatically gets
+    # a GITHUB_TOKEN from GitHub Actions that has read/write access to itself
+    # — by passing it as GH_PAT we give the central workflow what it needs to
+    # check out this repo, without requiring a separately managed PAT.
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      GH_PAT: ${{ secrets.GITHUB_TOKEN }}
