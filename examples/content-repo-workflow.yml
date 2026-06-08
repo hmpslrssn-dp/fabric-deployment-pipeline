@@ -67,6 +67,15 @@ jobs:
     # before this job is allowed to run.
     environment: ${{ github.ref_name }}
 
+    # outputs: exposes values from this job so the deploy job can read them.
+    # Environment-level variables (vars.*) are only accessible in jobs that have
+    # "environment:" set. The deploy job uses "uses:" for the reusable workflow
+    # and cannot also use "environment:" — GitHub doesn't allow both on the same
+    # job. The solution is to read FABRIC_WORKSPACE_ID here and pass it as an
+    # output so the deploy job can consume it via needs.gate.outputs.workspace_id.
+    outputs:
+      workspace_id: ${{ vars.FABRIC_WORKSPACE_ID }}
+
     steps:
       - name: Approved
         run: echo "Deployment to ${{ github.ref_name }} approved — proceeding."
@@ -100,10 +109,10 @@ jobs:
       # environment to deploy to and which parameter.yml values to use.
       environment_name: ${{ github.ref_name }}
 
-      # vars.FABRIC_WORKSPACE_ID is read from the GitHub Environment variables
-      # you configured in Settings → Environments. Each environment (dev/test/prod)
-      # has its own value, so this automatically resolves to the right workspace.
-      workspace_id: ${{ vars.FABRIC_WORKSPACE_ID }}
+      # Read from the gate job's output rather than vars.FABRIC_WORKSPACE_ID
+      # directly, because environment-level variables are not accessible in
+      # jobs that use a reusable workflow.
+      workspace_id: ${{ needs.gate.outputs.workspace_id }}
 
       # These paths are relative to the root of this content repo. Only specify
       # them if your folder structure differs from the default (artifacts/reports
