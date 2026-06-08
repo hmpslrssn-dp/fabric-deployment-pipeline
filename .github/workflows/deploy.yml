@@ -117,6 +117,10 @@ jobs:
         with:
           repository: hmpslrssn-dp/fabric-deployment-pipeline
           path: deployment
+          # No token needed — fabric-deployment-pipeline is a public repo.
+          # The GITHUB_TOKEN in a reusable workflow is scoped to the calling
+          # repo (e.g. pbi-sales-reports) and cannot access other private repos,
+          # so keeping this repo public avoids any authentication issues here.
 
       # ── Step 3: Install Python ─────────────────────────────────────────────
       - name: Set up Python
