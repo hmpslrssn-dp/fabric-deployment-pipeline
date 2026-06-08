@@ -101,15 +101,21 @@ jobs:
           token: ${{ secrets.GH_PAT }}
 
       # ── Step 2: Check out the deployment repo (this repo) ─────────────────
-      # This downloads the Python scripts and requirements.txt from this
-      # central repo. Because we are inside this repo's own workflow, no token
-      # is needed — the default GITHUB_TOKEN covers it.
+      # This downloads the Python scripts and requirements.txt from the central
+      # repo onto the runner.
       #
-      # path: deployment puts the files in a subfolder called "deployment" to
-      # keep them clearly separate from the content repo files above.
+      # IMPORTANT: in a reusable workflow, github.repository refers to the
+      # CALLER's repo (e.g. pbi-sales-reports), not the repo this workflow
+      # lives in. That means actions/checkout without an explicit repository:
+      # would check out the content repo a second time instead of this repo.
+      # We must specify the repository name explicitly to get the right code.
+      #
+      # path: deployment keeps the files in a separate subfolder so they don't
+      # collide with the content repo files checked out in step 1.
       - name: Check out deployment repo
         uses: actions/checkout@v4
         with:
+          repository: hmpslrssn-dp/fabric-deployment-pipeline
           path: deployment
 
       # ── Step 3: Install Python ─────────────────────────────────────────────
