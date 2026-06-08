@@ -17,10 +17,31 @@
 # The script reads all configuration from environment variables injected by
 # the GitHub Actions workflow — it contains no hardcoded credentials, workspace
 # IDs, or file paths, making it safe to commit to source control.
+#
+# WHY A COMBINED DIRECTORY?
+# -------------------------
+# fabric-cicd resolves "byPath" references in report definition files by
+# looking up the referenced semantic model in the same FabricWorkspace
+# instance's item registry. That registry is built from a single
+# repository_directory — it only knows about items inside that one folder.
+#
+# Our content repos store reports and semantic models in separate sub-folders
+# (artifacts/reports/ and artifacts/semantic-models/). If we point two
+# separate FabricWorkspace instances at those separate folders, the reports
+# workspace has no knowledge of the semantic models workspace's items, so
+# byPath lookups fail with "Semantic model not found in the repository."
+#
+# The solution is to copy all items we want to deploy into a single temporary
+# directory before deploying, then point ONE FabricWorkspace instance at that
+# combined directory. Both semantic models and reports are now in the same
+# registry, so the byPath lookup succeeds and fabric-cicd can automatically
+# rebind the report to the correct semantic model in the target workspace.
 # =============================================================================
 
 import os
 import sys
+import shutil
+import tempfile
 from pathlib import Path
 
 # fabric_cicd is the Microsoft package that handles communication with the
@@ -99,7 +120,7 @@ parameter_file_path = semantic_models_path / "parameter.yml"
 if parameter_file_path.exists():
     print(f"Parameter file found: {parameter_file_path}")
 else:
-    print("No parameter file found — deploying Semantic Models without parameter substitution.")
+    print("No parameter file found — deploying without parameter substitution.")
 
 
 # =============================================================================
@@ -121,67 +142,137 @@ credential = ClientSecretCredential(
 
 
 # =============================================================================
-# 4. Deploy Semantic Models
+# 4. Build a combined staging directory
 # =============================================================================
-# We deploy Semantic Models before Reports because Reports depend on Semantic
-# Models as their data source. Deploying in dependency order means the Report
-# always binds to an up-to-date model — there is no window where a newly
-# deployed Report is pointing at an outdated Semantic Model.
+# fabric-cicd requires all items it needs to cross-reference to be in the
+# same repository_directory. Because our repo stores reports and semantic
+# models in separate sub-folders, we create a temporary flat directory that
+# contains only the deployable item folders from both locations.
 #
-# Key FabricWorkspace arguments:
-#   workspace_id        — the Fabric workspace to deploy into
-#   token_credential    — the Azure credential object from step 3
-#   repository_directory— where fabric-cicd looks for item definition files.
-#                         This points at the content repo's semantic-models
-#                         folder, which also contains parameter.yml.
-#   item_type_in_scope  — restricts deployment to only Semantic Models, so we
-#                         don't accidentally publish other item types that might
-#                         be in the folder
-#   environment         — the environment name (dev / test / prod). fabric-cicd
-#                         uses this to select the correct replacement values
-#                         from parameter.yml (e.g. the "prod" server name)
-
-print(f"Deploying Semantic Models to workspace {workspace_id}...")
-
-semantic_model_workspace = FabricWorkspace(
-    workspace_id=workspace_id,
-    token_credential=credential,
-    repository_directory=str(semantic_models_path),
-    item_type_in_scope=["SemanticModel"],
-    environment=environment_name,
-)
-
-# publish_all_items scans repository_directory for item definitions and creates
-# or updates them in the target workspace. Items already in the workspace are
-# updated in place; new items are created. Items that exist in the workspace
-# but are absent from the folder are left untouched — nothing is deleted.
-publish_all_items(semantic_model_workspace)
-
-print("Semantic Models deployed successfully.")
-
-
-# =============================================================================
-# 5. Deploy Reports
-# =============================================================================
-# Same pattern as above, now targeting the reports folder and restricting to
-# the Report item type. Running this after the Semantic Model step ensures the
-# data source the report connects to is already up to date.
+# We deliberately copy only folders whose names end in ".SemanticModel" or
+# ".Report" — this matches fabric-cicd's own item-folder naming convention
+# and naturally excludes everything else (loose .pbip project files, .pbi
+# cache folders, localSettings.json, etc.) that is not a deployable item.
 #
-# Reports don't use a parameter file in this pipeline — their environment-
-# specific behaviour comes from binding to the correct Semantic Model, which
-# was already parameterised in the step above.
+# The parameter.yml file is copied alongside the items because fabric-cicd
+# always looks for it at the root of repository_directory.
+#
+# tempfile.mkdtemp() creates an empty directory in the OS temp space and
+# returns its path. We clean it up in the finally block whether the
+# deployment succeeds or fails.
 
-print(f"Deploying Reports to workspace {workspace_id}...")
+print("Building combined staging directory for deployment...")
 
-report_workspace = FabricWorkspace(
-    workspace_id=workspace_id,
-    token_credential=credential,
-    repository_directory=str(reports_path),
-    item_type_in_scope=["Report"],
-    environment=environment_name,
-)
+staging_dir = tempfile.mkdtemp(prefix="fabric_deploy_")
 
-publish_all_items(report_workspace)
+try:
+    # ── Copy semantic model item folders ──────────────────────────────────
+    # Walk the semantic-models source directory and copy each folder that
+    # looks like a deployable item (name ends with ".SemanticModel").
+    # The "." in the name is what fabric-cicd uses to identify item folders
+    # (e.g. "Sales-model.SemanticModel"). Folders without a "." in the name
+    # (like a loose sub-folder) or with a different suffix are skipped.
+    models_copied = []
+    for item in semantic_models_path.iterdir():
+        if item.is_dir() and item.name.endswith(".SemanticModel"):
+            dest = Path(staging_dir) / item.name
+            shutil.copytree(str(item), str(dest))
+            models_copied.append(item.name)
+            print(f"  Staged semantic model: {item.name}")
 
-print("Reports deployed successfully.")
+    # ── Copy report item folders ───────────────────────────────────────────
+    # Same pattern for reports. Only ".Report" suffix items are copied.
+    # This intentionally excludes any blank "attached" report that Power BI
+    # Desktop creates automatically alongside a .pbip project (those live in
+    # the semantic-models source folder and end with ".Report" too, but since
+    # we only scan reports_path here they are never picked up).
+    reports_copied = []
+    for item in reports_path.iterdir():
+        if item.is_dir() and item.name.endswith(".Report"):
+            dest = Path(staging_dir) / item.name
+            shutil.copytree(str(item), str(dest))
+            reports_copied.append(item.name)
+            print(f"  Staged report: {item.name}")
+
+    # ── Copy parameter.yml to the staging root ────────────────────────────
+    # fabric-cicd expects parameter.yml to be in repository_directory (the
+    # staging root). file_path entries inside parameter.yml are relative to
+    # that same root, so as long as the item folders are in the staging root
+    # the existing paths (e.g. "Sales-model.SemanticModel/definition/...")
+    # continue to work without any changes.
+    if parameter_file_path.exists():
+        shutil.copy(str(parameter_file_path), str(Path(staging_dir) / "parameter.yml"))
+        print(f"  Staged parameter.yml")
+
+    print(f"Staging complete: {len(models_copied)} semantic model(s), {len(reports_copied)} report(s).")
+
+
+    # =========================================================================
+    # 5. Deploy Semantic Models
+    # =========================================================================
+    # We deploy Semantic Models before Reports because Reports depend on
+    # Semantic Models as their data source. Deploying in dependency order means
+    # the Report always binds to an up-to-date model — there is no window where
+    # a newly deployed Report is pointing at an outdated Semantic Model.
+    #
+    # Both deployments use the SAME staging_dir as repository_directory. This
+    # is the key change from the single-directory approach: by having both item
+    # types in the same directory, the reports workspace can look up the
+    # semantic model by its local path when resolving "byPath" references in
+    # report definition files — something it could never do when the two item
+    # types lived in separate FabricWorkspace instances.
+    #
+    # item_type_in_scope restricts each call to one item type so that the
+    # semantic model step doesn't accidentally try to deploy the report and
+    # vice versa.
+
+    print(f"\nDeploying Semantic Models to workspace {workspace_id}...")
+
+    semantic_model_workspace = FabricWorkspace(
+        workspace_id=workspace_id,
+        token_credential=credential,
+        repository_directory=staging_dir,     # ← the combined staging directory
+        item_type_in_scope=["SemanticModel"],  # ← only deploy semantic models in this pass
+        environment=environment_name,          # ← selects the right parameter.yml values
+    )
+
+    publish_all_items(semantic_model_workspace)
+    print("Semantic Models deployed successfully.")
+
+
+    # =========================================================================
+    # 6. Deploy Reports
+    # =========================================================================
+    # Same staging_dir, same workspace instance pattern — just a different
+    # item_type_in_scope. Because this workspace instance was initialised with
+    # the same staging_dir that contains the semantic model folders, it can
+    # find and resolve the "byPath" reference in definition.pbir, look up
+    # the semantic model that was just deployed, and automatically rewrite
+    # the connection to point at that model's ID in the target workspace.
+
+    print(f"\nDeploying Reports to workspace {workspace_id}...")
+
+    report_workspace = FabricWorkspace(
+        workspace_id=workspace_id,
+        token_credential=credential,
+        repository_directory=staging_dir,  # ← same combined staging directory
+        item_type_in_scope=["Report"],     # ← only deploy reports in this pass
+        environment=environment_name,
+    )
+
+    publish_all_items(report_workspace)
+    print("Reports deployed successfully.")
+
+finally:
+    # =========================================================================
+    # 7. Clean up the staging directory
+    # =========================================================================
+    # Always remove the temporary staging directory after deployment, whether
+    # it succeeded or failed. shutil.rmtree removes the directory and all its
+    # contents recursively — the equivalent of "rm -rf" on Linux.
+    # The try/finally block guarantees this runs even if an exception is raised
+    # above, so we never leave orphaned temp files on the runner.
+    shutil.rmtree(staging_dir, ignore_errors=True)
+    print("\nStaging directory cleaned up.")
+
 print("Deployment complete.")
