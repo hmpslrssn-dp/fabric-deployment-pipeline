@@ -118,6 +118,10 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+          # Because both repos are checked out into subfolders (deployment/ and
+          # content/), requirements.txt is not in the workspace root where pip
+          # caching looks by default. Pointing it at the exact path fixes that.
+          cache-dependency-path: deployment/requirements.txt
 
       # ── Step 4: Install Python dependencies ───────────────────────────────
       # requirements.txt lives in the deployment repo, so we reference it via
